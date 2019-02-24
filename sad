@@ -1,0 +1,64 @@
+export const trigger = (event, context, cb) => {
+  _(event.Records)
+    .flatMap(getRelatedEvents)
+    .map(view)
+    .flatMap(saveView)
+    .collect().toCallback(cb);
+};
+
+const getRelatedEvents = (record) => {
+  const params = {
+    TableName: process.env.EVENT_STORE_TABLE_NAME,
+    KeyConditionExpression: '#id = :id',
+    ExpressionAttributeNames: {
+      '#id': 'id'
+    },
+    ExpressionAttributeValues: {
+      ':id': record.dynamodb.Keys.id.S
+    }
+  };
+
+  const db = new aws.DynamoDB.DocumentClient();
+
+  return _(db.query(params).promise()
+    .then(data => ({
+      record: record,
+      data: data,
+    }))
+  );
+}
+
+const view = (uow) => {
+  // create a dictionary by event type
+  uow.dictionary = uow.data.Items.reduce((dictionary, item) => {
+    // events are sorted by range key
+    item.event.type === 'order-submitted' ?
+      dictionary[item.event.type].push(item.event) :
+      dictionary[item.event.type] = item.event;
+
+    return dictionary;
+  }, { // default values
+      'user-created': { user: { name: undefined } },
+      'user-loggedIn': { timestamp: undefined },
+      'order-submitted': []
+    });
+    // map the fields
+  uow.item = {
+  id: uow.record.dynamodb.Keys.id.S,
+    name: uow.dictionary['user-created'].user.name,
+    lastLogin: uow.dictionary['user-loggedIn'].timestamp,
+    recentOrderCount: uow.dictionary['order-submitted'].length,
+  };
+
+  return uow;
+}
+
+const saveView = (uow) => {
+  const params = {
+    TableName: process.env.VIEW_TABLE_NAME,
+    Item: uow.item,
+  };
+
+  const db = new aws.DynamoDB.DocumentClient();
+  return _(db.put(params).promise());
+};
